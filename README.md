@@ -44,7 +44,7 @@ We named the bit-simplified transformer encoder for detection (bit-STED) based o
 <img width="2254" height="814" alt="nmsArea" src="https://github.com/user-attachments/assets/f66d73de-5305-4642-879e-ef98ba0df836" />
 
 
-<details><summary>Trained weights</summary>
+## <details><summary>Trained weights</summary>
 
 |                                  | <br>Image size | AP (%) | Inference Time (ms) | Size (mb) | <br>Trainable Params (M)<br> | <br><F1 (%)> | 
 | -------------------------------------------------------------------------------------------- | ------------------- | -------------------- | --------------------- | ------------------------------- | ------------------------------------ | ------------------- |
