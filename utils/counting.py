@@ -242,8 +242,9 @@ def get_boxes_map(model, imgnp, ch, obj, conf_thr, iou_thr, diou_thr, img_size=2
     B = imgnp[0,:,:]
     G = imgnp[1,:,:]
     R = imgnp[2,:,:]
-    Re = imgnp[3,:,:]
-    NIR = imgnp[4,:,:]
+    if ch!='bgr':
+        Re = imgnp[3,:,:]
+        NIR = imgnp[4,:,:]
     
     #imgnp = imgnp.transpose((1, 2, 0)) # W x H x N channels
     #imgnp = imgnp[:,:,channels]
