@@ -8,6 +8,7 @@ import rasterio as rio
 from utils.utils import VI
 from model.trainer import count_parameters
 from model.trainer import model_size
+from model.transformer_encoder import BitLinear
 import time
 
 def read_orthomap_full(map_dir):
@@ -70,12 +71,17 @@ def get_model_pars_from_dir(model_dir):
 #return list of boxes and list of scores for each image
 def inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(0, 0), xyxy=True, device='cuda'):
     model.eval()
+    #flag1 = time.time()
     image_preds = model(im)
+    #flag2 = time.time()
     #image_preds = image_preds.cpu()
     
     boxes_n = [torch.zeros([0, 4]) for _ in range(len(image_preds))]
     scores_n = [torch.zeros([0]) for _ in range(len(image_preds))]
+    classes_n = [torch.zeros([0]) for _ in range(len(image_preds))]
+    masks_n = [torch.zeros([224, 224]) for _ in range(len(image_preds))]
     
+    #for image_i, (prediction, mask) in enumerate(zip(image_preds[0], image_preds[1])): #each image of the batch
     for image_i, prediction in enumerate(image_preds): #each image of the batch
         #filter occording to min confidence threshold
         if obj == 'bbox':
@@ -98,6 +104,10 @@ def inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(0, 0), xyxy=True, d
         
             boxes = prediction[:,0:4]
             scores = prediction[:,4].to(device) #scores of boxes
+            if prediction.shape[1]>5:
+                cls = prediction[:,5].to(device)
+            else:
+                cls = torch.zeros(len(boxes)).to(device)
             
             #update boxes to orthomosaic map
             boxes[:,0] = boxes[:,0] + adjust_ij[1] #x1
@@ -109,6 +119,10 @@ def inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(0, 0), xyxy=True, d
         else:
             boxes = prediction[:,0:3]
             scores = prediction[:,3].to(device) #scores of boxes
+            if prediction.shape[1]>4:
+                cls = prediction[:,4].to(device)
+            else:
+                cls = torch.zeros(len(boxes)).to(device)
             
             #update boxes to orthomosaic map
             boxes[:,0] = boxes[:,0] + adjust_ij[1] #xc
@@ -117,20 +131,12 @@ def inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(0, 0), xyxy=True, d
             
         boxes_n[image_i] = boxes
         scores_n[image_i] = scores
+        classes_n[image_i] = cls
+        #masks_n[image_i] = mask
         
-    return boxes_n, scores_n
+    return boxes_n, scores_n, classes_n, masks_n
 
-def get_boxes_fraction_map(model_dir, imgnp, N_channels, n_model, num_blks, loss_type, obj, ch, conf_thr, iou_thr, diou_thr, img_size=224, device='cuda', bitNet=False, frac_size=336, nms=False):
-    
-    import model.transformer
-    model = model.transformer.TransformerObjectDetection(img_size, N_channels, n_model, num_blks, 
-                                                         obj = obj, loss_type= loss_type, device=device, bitNet=bitNet).to(device)
-    checkpoint = torch.load(model_dir, map_location=torch.device(device))
-    if type(checkpoint) == dict:
-        model.load_state_dict(checkpoint['model'])
-    else:
-        model.load_state_dict( checkpoint )
-    print("Model loaded")
+def get_boxes_fraction_map(model, imgnp, ch, obj, conf_thr, iou_thr, diou_thr, img_size=224, device='cuda', bitNet=False, n_classes=2, frac_size=336, nms=False):
     
     #load fraction   
     center = np.array(imgnp[0,:,:].shape)//2
@@ -183,7 +189,7 @@ def get_boxes_fraction_map(model_dir, imgnp, N_channels, n_model, num_blks, loss
             im[0:i2-i, 0:j2-j, :] = img[i:i2,j:j2, :]
             im = (torch.Tensor(im).permute(2, 0, 1).unsqueeze(0)).to(device) #1 x n channels x W x H
             
-            boxes, scores  = inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(i, j), device=device)
+            boxes, scores, _, _  = inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(i, j), device=device)
             boxes, scores = boxes[0], scores[0]
             print('\r', "Tile %4d:%4d, %4d:%4d, Objects Detected: %3d"%(i, i2, j, j2, len(boxes)), end='')
             
@@ -193,7 +199,7 @@ def get_boxes_fraction_map(model_dir, imgnp, N_channels, n_model, num_blks, loss
             
             #for plot testing take in account only completed patches
             if len(preds_boxes_test)<4 and i+img_size<=img.shape[0] and j+img_size<=img.shape[1]: 
-                boxes, scores  = inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(0, 0), device=device)
+                boxes, scores, _, _ = inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(0, 0), device=device)
                 boxes, scores = boxes[0], scores[0]
                 preds_boxes_test.append(boxes)
                 preds_scores_test.append(scores)
@@ -214,17 +220,21 @@ def get_boxes_fraction_map(model_dir, imgnp, N_channels, n_model, num_blks, loss
     
     return img, all_boxes, all_scores, boxes_filtered, scores_filtered, preds_boxes_test, preds_scores_test, imgs_test, obj
 
-def get_boxes_map(model_dir, imgnp, N_channels, n_model, num_blks, loss_type, obj, ch, conf_thr, iou_thr, diou_thr, img_size=224, device='cuda', bitNet=False, nms=False):
-    
+def load_model(model_dir, img_size, N_channels, n_model, num_blks, obj, device, bitNet, segment=False):
     import model.transformer
     model = model.transformer.TransformerObjectDetection(img_size, N_channels, n_model, num_blks, 
-                                                         obj = obj, loss_type= loss_type, device=device, bitNet=bitNet).to(device)
+                                                         obj = obj, device=device, 
+                                                         bitNet=bitNet, segment=False).to(device)
     checkpoint = torch.load(model_dir, map_location=torch.device(device))
     if type(checkpoint) == dict:
         model.load_state_dict(checkpoint['model'])
     else:
         model.load_state_dict( checkpoint )
     print("Model loaded")
+    
+    return model
+    
+def get_boxes_map(model, imgnp, ch, obj, conf_thr, iou_thr, diou_thr, img_size=224, device='cuda', nms=False):
     
     n_pars = count_parameters(model)
     n_size_mb = model_size(model)
@@ -249,13 +259,13 @@ def get_boxes_map(model_dir, imgnp, N_channels, n_model, num_blks, loss_type, ob
         VI_2 = VI(channels, VI_N[1], ranges=None)
         VI_3 = VI(channels, VI_N[2], ranges=None)
         img = cv2.merge((B, G, R, VI_1, VI_2, VI_3))       
-    elif ch == 'viShadowAttenuation': #incomplete
+    elif ch == 'viSH': #incomplete
         VI_1 = imgnp[5,:,:]
         VI_2 = imgnp[6,:,:]
         VI_3 = imgnp[7,:,:]
         img = cv2.merge((B, G, R, VI_1, VI_2, VI_3))
     else:
-        print("Error loading map")  
+        print("Error loading map for "+ch)  
     print("Map loaded: "+str(imgnp.shape) )
     
     all_boxes = torch.tensor([]).to(device)
@@ -273,15 +283,17 @@ def get_boxes_map(model_dir, imgnp, N_channels, n_model, num_blks, loss_type, ob
             im = (torch.Tensor(im).permute(2, 0, 1).unsqueeze(0)).to(device) #1 x n channels x W x H
             
             start_b = time.time()        
-            boxes, scores  = inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(i, j), device=device)            
+            boxes, scores, classes,_ = inference(model, im, obj, conf_thr, diou_thr, adjust_ij=(i, j), device=device)            
             end_b = time.time()
             times_predict.append(end_b-start_b)
-            boxes, scores = boxes[0], scores[0]
-            print('\r', "Tile %4d:%4d, %4d:%4d, Objects Detected: %3d"%(i, i2, j, j2, len(boxes)), end='')
+            #times_predict.append(ts)
+            boxes, scores, classes = boxes[0], scores[0], classes[0]
+            print('\r', "Tile %4d:%4d, %4d:%4d, Objects Detected: %5d, im_shape %3d %3d %3d %3d, t:%2.2f"%(i, i2, j, j2, len(boxes), im.shape[0], im.shape[1], im.shape[2], im.shape[3], (end_b-start_b)*1000), end='')
             
             if boxes!=None:
                 all_boxes = torch.concat((all_boxes, boxes))
                 all_scores = torch.concat((all_scores, scores))
+                all_categories = torch.concat((all_categories, classes))
                 
     print()
     print("All boxes detected: %d"%(len(all_boxes)))
@@ -297,17 +309,18 @@ def get_boxes_map(model_dir, imgnp, N_channels, n_model, num_blks, loss_type, ob
     
     boxes_filtered = all_boxes[[index_filter_boxes]]
     scores_filtered = all_scores[[index_filter_boxes]]
+    classes_filtered = all_categories[[index_filter_boxes]]
     
-    return imgnp, all_boxes, all_scores, boxes_filtered, scores_filtered, n_pars, n_size_mb, np.array(times_predict).mean(), obj
+    return imgnp, all_boxes, all_scores, all_categories, boxes_filtered, scores_filtered, classes_filtered, n_pars, n_size_mb, np.array(times_predict).mean(), obj
 
-def get_counting_orthomap(folder_maps, zone_name, model_dir, imgnp, conf_thr, iou_thr, diou_thr, img_size, device, nms):
+#def get_counting_orthomap(folder_maps, zone_name, model, channels, bitNet, obj, imgnp, conf_thr, iou_thr, diou_thr, img_size, device, nms, n_classes=1):
     
-    n_model, num_blks, obj, N_channels, channels, loss_type, bitNet = get_model_pars_from_dir(model_dir)
+    #n_model, num_blks, obj, N_channels, channels, loss_type, bitNet = get_model_pars_from_dir(model_dir)
     
-    result = get_boxes_map(model_dir, imgnp, N_channels, n_model, num_blks, loss_type, obj, 
-                                           channels, conf_thr, iou_thr, diou_thr, img_size, device, bitNet, nms)
-    imgnp, all_boxes, all_scores, boxes_filtered, scores_filtered, n_pars, n_size_mb, time_avg_pred, obj = result
-    
+#    result = get_boxes_map(model, imgnp, channels, obj, conf_thr, iou_thr, diou_thr, img_size, device, bitNet, n_classes, nms)
+#    imgnp, all_boxes, all_scores, all_categories, boxes_filtered, scores_filtered, classes_filtered, n_pars, n_size_mb, time_avg_pred, obj = result
+
+def get_metrics_orthomap(folder_maps, zone_name, device, all_boxes, all_scores, all_categories, boxes_filtered, scores_filtered, classes_filtered, n_pars, n_size_mb, time_avg_pred, obj, n_classes=1):  
     ############ Object Detection Metrics ##############################
     file_name = folder_maps + zone_name + "_labels.txt"
     boxes_gt = torch.tensor([]).to(device)
@@ -324,18 +337,24 @@ def get_counting_orthomap(folder_maps, zone_name, model_dir, imgnp, conf_thr, io
         else:
             (xc,yc),radius = cv2.minEnclosingCircle(cnt.astype('int'))
             box_gt = torch.tensor(np.array([[xc, yc, radius]])).to(device)
-        class_gt = torch.tensor(np.array([data[0]])).to(device)
+        #class_gt = torch.tensor(np.array([data[0]])).to(device)
+        class_gt = torch.tensor(np.array([0])).to(device)#all 0 when onnly one class
 
         boxes_gt = torch.concat((boxes_gt, box_gt))
         classes_gt = torch.concat((classes_gt, class_gt))
     print("Ground Truth read for %s with %d boxes"%(zone_name, boxes_gt.shape[0]))
     
-    categories_filtered=1
+    #classes_gt = torch.zeros_like(classes_gt)#to check only one class
+    #classes_filtered=1
     if boxes_filtered.shape[0]>0:
-        mAP50, N_agaves_mAP50 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, categories_filtered, num_classes=1, scores=scores_filtered, obj=obj, iou_thr=0.5, DIoU=True, CIoU=True, device=device)
-        mAP75, N_agaves_mAP75 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, categories_filtered, num_classes=1, scores=scores_filtered, obj=obj, iou_thr=0.75, DIoU=True, CIoU=True, device=device)
-        mAP95, N_agaves_mAP95 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, categories_filtered, num_classes=1, scores=scores_filtered, obj=obj, iou_thr=0.95, DIoU=True, CIoU=True, device=device)
+        mAP25, N_agaves_mAP25, aps25 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, classes_filtered, num_classes=n_classes, scores=scores_filtered, obj=obj, iou_thr=0.25, DIoU=True, CIoU=True, device=device)
+        mAP40, N_agaves_mAP40, aps40 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, classes_filtered, num_classes=n_classes, scores=scores_filtered, obj=obj, iou_thr=0.4, DIoU=True, CIoU=True, device=device)
+        mAP50, N_agaves_mAP50, aps50 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, classes_filtered, num_classes=n_classes, scores=scores_filtered, obj=obj, iou_thr=0.5, DIoU=True, CIoU=True, device=device)
+        mAP75, N_agaves_mAP75, aps75 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, classes_filtered, num_classes=n_classes, scores=scores_filtered, obj=obj, iou_thr=0.75, DIoU=True, CIoU=True, device=device)
+        mAP95, N_agaves_mAP95, aps95 = utils.utils.mAP(boxes_gt, boxes_filtered, classes_gt, classes_filtered, num_classes=n_classes, scores=scores_filtered, obj=obj, iou_thr=0.95, DIoU=True, CIoU=True, device=device)
     else:#if no detected boxes
+        mAP25, N_agaves_mAP25 = 0.0, 0
+        mAP40, N_agaves_mAP40 = 0.0, 0
         mAP50, N_agaves_mAP50 = 0.0, 0
         mAP75, N_agaves_mAP75 = 0.0, 0
         mAP95, N_agaves_mAP95 = 0.0, 0
@@ -347,24 +366,40 @@ def get_counting_orthomap(folder_maps, zone_name, model_dir, imgnp, conf_thr, io
     #error_mAP95 = ((N_agaves_mAP95-N_agaves_real)/N_agaves_real)*100
 
     #detection metrics
-    sort_index = scores_filtered.argsort(descending=True) #sort of the largest score to the smallest
-    boxes_pred = boxes_filtered[sort_index]
-    #classes_pred = categories_filtered[sort_index]
-    classes_pred = torch.zeros_like(scores_filtered)
+    #sort_index = scores_filtered.argsort(descending=True) #sort of the largest score to the smallest
+    boxes_pred = boxes_filtered#[sort_index]
+    classes_pred = classes_filtered#[sort_index]
+    #classes_pred = torch.zeros_like(scores_filtered)
     average_precisions = []
     epsilon = 1e-6
     corrects=0
     
+    TP_index_25 = []
+    FP_index_25 = []
+    FN_index_25 = []
+    
+    TP_index_40 = []
+    FP_index_40 = []
+    FN_index_40 = []
+    
+    TP_index_50 = []
+    FP_index_50 = []
+    FN_index_50 = []
+    
     #Get ground truth data considering only one class
-    for c in range(1):
+    for c in range(n_classes):
         boxes_gt_c = torch.tensor([]).to(device)
         boxes_pred_c = torch.tensor([]).to(device)
-        for box_gt, class_gt in zip(boxes_gt, classes_gt):
+        selected_ind_class_gt = []
+        selected_ind_class_pred = []
+        for i, (box_gt, class_gt) in enumerate(zip(boxes_gt, classes_gt)):
             if class_gt == c:
                 boxes_gt_c = torch.concat((boxes_gt_c, box_gt.unsqueeze(0) ))
-        for box_pred, class_pred in zip(boxes_pred, classes_pred):
+                selected_ind_class_gt.append(i)
+        for i, (box_pred, class_pred) in enumerate(zip(boxes_pred, classes_pred)):
             if class_pred == c:
                 boxes_pred_c = torch.concat((boxes_pred_c, box_pred.unsqueeze(0) ))
+                selected_ind_class_pred.append(i)
         
         if boxes_pred_c.shape[0]>0:
             if obj == 'bbox':
@@ -373,72 +408,64 @@ def get_counting_orthomap(folder_maps, zone_name, model_dir, imgnp, conf_thr, io
                 ious = utils.utils.cbbox_iou(boxes_gt_c, boxes_pred_c, align=False, DIoU = True)
         else:
             ious = torch.zeros(len(boxes_gt_c), 0).to(device)
-        
-        ###################### Detection for min overlap ###########################
-        ious_filter = ious.where(ious>0.0,torch.tensor(0.)) #match with some overlap
-        mappings = utils.utils.get_mappings(ious_filter) if boxes_pred_c.shape[0]>0 else torch.zeros(len(boxes_gt_c), 0).to(device)
-
-        TP_index = mappings.sum(0).eq(1).long() #sum cols and select only the results eq to 1 and conver boolean to long : array of len of predictions
-        FP_index = mappings.sum(0).eq(0).long() #sum cols and select only the results eq to 0 and conver boolean to long : array of len of predictions
-        FN_index = mappings.sum(1).eq(0).long() #sum rows and select only the results eq to 0 and conver boolean to long : array of len of ground truths
-
-        TP_index = torch.where(TP_index[sort_index.argsort()])[0]
-        FP_index = torch.where(FP_index[sort_index.argsort()])[0]
-        FN_index = torch.where(FN_index)[0]
+        print("IoU with GT computed")
         
         ###################### Detection according diou_thr 0.25 ###########################
         ious_filter = ious.where(ious>0.25,torch.tensor(0.)) #match with some overlap
+        mappings = utils.utils.get_mappings(ious_filter) if boxes_pred_c.shape[0]>0 else torch.zeros(len(boxes_gt_c), 0).to(device)
+
+        TP_index1 = mappings.sum(0).eq(1).long() #sum cols and select only the results eq to 1 and conver boolean to long : array of len of predictions
+        FP_index1 = mappings.sum(0).eq(0).long() #sum cols and select only the results eq to 0 and conver boolean to long : array of len of predictions
+        FN_index1 = mappings.sum(1).eq(0).long() #sum rows and select only the results eq to 0 and conver boolean to long : array of len of ground truths
+
+        #TP_index2 = torch.where(TP_index2[sort_index.argsort()])[0]
+        #FP_index2 = torch.where(FP_index2[sort_index.argsort()])[0]
+        #FN_index2 = torch.where(FN_index2)[0]
+        TP_index1 = torch.where(TP_index1)[0]; TP_index1 = np.array(selected_ind_class_pred)[TP_index1.cpu()]
+        FP_index1 = torch.where(FP_index1)[0]; FP_index1 = np.array(selected_ind_class_pred)[FP_index1.cpu()]
+        FN_index1 = torch.where(FN_index1)[0]; FN_index1 = np.array(selected_ind_class_gt)[FN_index1.cpu()]
+        
+        TP_index_25.append(TP_index1)
+        FP_index_25.append(FP_index1)
+        FN_index_25.append(FN_index1)
+        
+        ###################### Detection according diou_thr 0.4 ###########################
+        ious_filter = ious.where(ious>0.4,torch.tensor(0.)) #match with some overlap
         mappings = utils.utils.get_mappings(ious_filter) if boxes_pred_c.shape[0]>0 else torch.zeros(len(boxes_gt_c), 0).to(device)
 
         TP_index2 = mappings.sum(0).eq(1).long() #sum cols and select only the results eq to 1 and conver boolean to long : array of len of predictions
         FP_index2 = mappings.sum(0).eq(0).long() #sum cols and select only the results eq to 0 and conver boolean to long : array of len of predictions
         FN_index2 = mappings.sum(1).eq(0).long() #sum rows and select only the results eq to 0 and conver boolean to long : array of len of ground truths
 
-        TP_index2 = torch.where(TP_index2[sort_index.argsort()])[0]
-        FP_index2 = torch.where(FP_index2[sort_index.argsort()])[0]
-        FN_index2 = torch.where(FN_index2)[0]
+        TP_index2 = torch.where(TP_index2)[0]; TP_index2 = np.array(selected_ind_class_pred)[TP_index2.cpu()]
+        FP_index2 = torch.where(FP_index2)[0]; FP_index2 = np.array(selected_ind_class_pred)[FP_index2.cpu()]
+        FN_index2 = torch.where(FN_index2)[0]; FN_index2 = np.array(selected_ind_class_gt)[FN_index2.cpu()]
         
-        ###################### Detection according diou_thr 0.4 ###########################
-        ious_filter = ious.where(ious>0.4,torch.tensor(0.)) #match with some overlap
+        TP_index_40.append(TP_index2)
+        FP_index_40.append(FP_index2)
+        FN_index_40.append(FN_index2)
+        
+        ###################### Detection according diou_thr 0.5 ###########################
+        ious_filter = ious.where(ious>0.5,torch.tensor(0.)) #match with some overlap
         mappings = utils.utils.get_mappings(ious_filter) if boxes_pred_c.shape[0]>0 else torch.zeros(len(boxes_gt_c), 0).to(device)
 
         TP_index3 = mappings.sum(0).eq(1).long() #sum cols and select only the results eq to 1 and conver boolean to long : array of len of predictions
         FP_index3 = mappings.sum(0).eq(0).long() #sum cols and select only the results eq to 0 and conver boolean to long : array of len of predictions
         FN_index3 = mappings.sum(1).eq(0).long() #sum rows and select only the results eq to 0 and conver boolean to long : array of len of ground truths
 
-        TP_index3 = torch.where(TP_index3[sort_index.argsort()])[0]
-        FP_index3 = torch.where(FP_index3[sort_index.argsort()])[0]
-        FN_index3 = torch.where(FN_index3)[0]
+        TP_index3 = torch.where(TP_index3)[0]; TP_index3 = np.array(selected_ind_class_pred)[TP_index3.cpu()]
+        FP_index3 = torch.where(FP_index3)[0]; FP_index3 = np.array(selected_ind_class_pred)[FP_index3.cpu()]
+        FN_index3 = torch.where(FN_index3)[0]; FN_index3 = np.array(selected_ind_class_gt)[FN_index3.cpu()]
         
-        ###################### Detection according diou_thr 0.5 ###########################
-        ious_filter = ious.where(ious>iou_thr,torch.tensor(0.)) #match with some overlap
-        mappings = utils.utils.get_mappings(ious_filter) if boxes_pred_c.shape[0]>0 else torch.zeros(len(boxes_gt_c), 0).to(device)
-
-        TP_index4 = mappings.sum(0).eq(1).long() #sum cols and select only the results eq to 1 and conver boolean to long : array of len of predictions
-        FP_index4 = mappings.sum(0).eq(0).long() #sum cols and select only the results eq to 0 and conver boolean to long : array of len of predictions
-        FN_index4 = mappings.sum(1).eq(0).long() #sum rows and select only the results eq to 0 and conver boolean to long : array of len of ground truths
-
-        TP_index4 = torch.where(TP_index4[sort_index.argsort()])[0]
-        FP_index4 = torch.where(FP_index4[sort_index.argsort()])[0]
-        FN_index4 = torch.where(FN_index4)[0]
+        TP_index_50.append(TP_index3)
+        FP_index_50.append(FP_index3)
+        FN_index_50.append(FN_index3)
         
-        ###################### Detection according diou_thr 0.75 ###########################
-        ious_filter = ious.where(ious>0.75,torch.tensor(0.)) #match with some overlap
-        mappings = utils.utils.get_mappings(ious_filter) if boxes_pred_c.shape[0]>0 else torch.zeros(len(boxes_gt_c), 0).to(device)
-
-        TP_index5 = mappings.sum(0).eq(1).long() #sum cols and select only the results eq to 1 and conver boolean to long : array of len of predictions
-        FP_index5 = mappings.sum(0).eq(0).long() #sum cols and select only the results eq to 0 and conver boolean to long : array of len of predictions
-        FN_index5 = mappings.sum(1).eq(0).long() #sum rows and select only the results eq to 0 and conver boolean to long : array of len of ground truths
-
-        TP_index5 = torch.where(TP_index5[sort_index.argsort()])[0]
-        FP_index5 = torch.where(FP_index5[sort_index.argsort()])[0]
-        FN_index5 = torch.where(FN_index5)[0]
-    
     eps = 1e-6
     ###################### Detection for min overlap ###########################
     #d_acc = len(TP_index)/(boxes_gt.shape[0]+eps)
-    d_recall = len(TP_index)/(len(TP_index)+len(FN_index)) if (len(TP_index)+len(FN_index))!=0 else 1
-    d_precision = len(TP_index)/(len(TP_index)+len(FP_index)) if (len(TP_index)+len(FP_index))!=0 else 1
+    d_recall = len(TP_index1)/(len(TP_index1)+len(FN_index1)) if (len(TP_index1)+len(FN_index1))!=0 else 1
+    d_precision = len(TP_index1)/(len(TP_index1)+len(FP_index1)) if (len(TP_index1)+len(FP_index1))!=0 else 1
     d_f1 = (2*d_precision*d_recall)/(d_precision+d_recall+eps)
     d_recall*=100; d_precision*=100; d_f1*=100
     
@@ -456,35 +483,45 @@ def get_counting_orthomap(folder_maps, zone_name, model_dir, imgnp, conf_thr, io
     d_f13 = (2*d_precision3*d_recall3)/(d_precision3+d_recall3+eps)
     d_recall3*=100; d_precision3*=100; d_f13*=100
     
-    ###################### Detection according diou_thr 0.5 ###########################
-    #d_acc3 = len(TP_index3)/(boxes_gt.shape[0]+eps)
-    d_recall4 = len(TP_index4)/(len(TP_index4)+len(FN_index4)) if (len(TP_index4)+len(FN_index4))!=0 else 1
-    d_precision4 = len(TP_index4)/(len(TP_index4)+len(FP_index4)) if (len(TP_index4)+len(FP_index4))!=0 else 1
-    d_f14 = (2*d_precision4*d_recall4)/(d_precision4+d_recall4+eps)
-    d_recall4*=100; d_precision4*=100; d_f14*=100
-    
-    ###################### Detection according diou_thr 0.75 ###########################
-    #d_acc3 = len(TP_index3)/(boxes_gt.shape[0]+eps)
-    d_recall5 = len(TP_index5)/(len(TP_index5)+len(FN_index5)) if (len(TP_index5)+len(FN_index5))!=0 else 1
-    d_precision5 = len(TP_index5)/(len(TP_index5)+len(FP_index5)) if (len(TP_index5)+len(FP_index5))!=0 else 1
-    d_f15 = (2*d_precision5*d_recall5)/(d_precision5+d_recall5+eps)
-    d_recall5*=100; d_precision5*=100; d_f15*=100
-    
     ###################### Save results ###########################
-    final_result = (zone_name, boxes_filtered, scores_filtered, boxes_gt, TP_index, FP_index, FN_index, TP_index2, FP_index2, FN_index2, TP_index3, FP_index3, FN_index3, TP_index4, FP_index4, FN_index4, TP_index5, FP_index5, FN_index5, obj)
+    #final_result = (zone_name, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index, FP_index, FN_index, TP_index2, FP_index2, FN_index2, TP_index3, FP_index3, FN_index3, TP_index4, FP_index4, FN_index4, TP_index5, FP_index5, FN_index5, obj)
     
-    data = np.array([int(len(scores_filtered)), N_agaves_real, n_pars, np.round(n_size_mb, 3), 
-                     np.round(time_avg_pred*1000, 2), np.round(mAP50, 2), int(N_agaves_mAP50), 
-                     np.round(mAP75, 2), int(N_agaves_mAP75), np.round(mAP95, 2), int(N_agaves_mAP95),
+    if n_classes==2:
+        final_result = (zone_name, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index_25[0], TP_index_25[1], FP_index_25[0], FP_index_25[1], FN_index_25[0], FN_index_25[1], TP_index_40[0], TP_index_40[1], FP_index_40[0], FP_index_40[1], FN_index_40[0], FN_index_40[1], TP_index_50[0], TP_index_50[1], FP_index_50[0], FP_index_50[1], FN_index_50[0], FN_index_50[1], obj)
+        
+        data = np.array([int(len(scores_filtered)), N_agaves_real, n_pars, np.round(n_size_mb, 3), 
+                         np.round(time_avg_pred*1000, 2), 
+                         np.round(mAP25, 2), int(N_agaves_mAP25), np.round(aps25[0], 2), np.round(aps25[1], 2),
+                         np.round(mAP40, 2), int(N_agaves_mAP40), np.round(aps40[0], 2), np.round(aps40[1], 2),
+
+                         np.round(mAP50, 2), int(N_agaves_mAP50), np.round(aps50[0], 2), np.round(aps50[1], 2),
+                         np.round(mAP75, 2), int(N_agaves_mAP75), np.round(aps75[0], 2), np.round(aps75[1], 2),
+                         np.round(mAP95, 2), int(N_agaves_mAP95), np.round(aps95[0], 2), np.round(aps95[1], 2),
+                         np.round(d_recall, 2), np.round(d_precision, 2), np.round(d_f1, 2),
+                         np.round(d_recall2, 2), np.round(d_precision2, 2), np.round(d_f12, 2),
+                         np.round(d_recall3, 2), np.round(d_precision3, 2), np.round(d_f13, 2),
+                         len(TP_index1), len(FP_index1), len(FN_index1),
+                        len(TP_index2), len(FP_index2), len(FN_index2),
+                        len(TP_index3), len(FP_index3), len(FN_index3)
+                        ])
+    else:
+        final_result = (zone_name, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index_25[0], 
+                        FP_index_25[0], FN_index_25[0], TP_index_40[0], FP_index_40[0], FN_index_40[0], TP_index_50[0], FP_index_50[0], FN_index_50[0], obj)
+        
+        data = np.array([int(len(scores_filtered)), N_agaves_real, n_pars, np.round(n_size_mb, 3), 
+                     np.round(time_avg_pred*1000, 2), 
+                     np.round(mAP25, 2), int(N_agaves_mAP25), np.round(aps25[0], 2),
+                     np.round(mAP40, 2), int(N_agaves_mAP40), np.round(aps40[0], 2),
+                     
+                     np.round(mAP50, 2), int(N_agaves_mAP50), np.round(aps50[0], 2),
+                     np.round(mAP75, 2), int(N_agaves_mAP75), np.round(aps75[0], 2),
+                     np.round(mAP95, 2), int(N_agaves_mAP95), np.round(aps95[0], 2),
                      np.round(d_recall, 2), np.round(d_precision, 2), np.round(d_f1, 2),
                      np.round(d_recall2, 2), np.round(d_precision2, 2), np.round(d_f12, 2),
                      np.round(d_recall3, 2), np.round(d_precision3, 2), np.round(d_f13, 2),
-                     np.round(d_recall4, 2), np.round(d_precision4, 2), np.round(d_f14, 2),
-                     np.round(d_recall5, 2), np.round(d_precision5, 2), np.round(d_f15, 2),
-                     len(TP_index), len(FP_index), len(FN_index),
+                     len(TP_index1), len(FP_index1), len(FN_index1),
                     len(TP_index2), len(FP_index2), len(FN_index2),
-                    len(TP_index3), len(FP_index3), len(FN_index3),
-                    len(TP_index4), len(FP_index4), len(FN_index4),
-                    len(TP_index5), len(FP_index5), len(FN_index5) ])
+                    len(TP_index3), len(FP_index3), len(FN_index3)
+                    ])
 
     return data, final_result

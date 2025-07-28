@@ -211,10 +211,12 @@ def get_enclosing_box(corners):
     
     return final
 
-def horisontal_flip(images, targets):
+def horisontal_flip(images, targets, masks=None):
     images = torch.flip(images, [-1])
     targets[:, 1] = 0.9999 - targets[:, 1] #xc coordinate
-    return images, targets
+    
+    masks = torch.flip(masks, [-1]) if masks!=None else None
+    return images, targets, masks
 
 class Load_data_agave_multispectral(Dataset):
     def __init__(self, data_folder: str, split = 'Val', augment=False, prob=0.5):
@@ -385,13 +387,14 @@ def rotate_point(point, angle, origin):
     return torch.cat((qx.view(-1, 1), qy.view(-1, 1)), axis=-1 )
 
 class Load_data_agave_circles_multispectral(Dataset):
-    def __init__(self, data_folder: str, split = 'Val', augment=False, prob = 0.5):
+    def __init__(self, data_folder: str, split = 'Val', augment=False, prob = 0.5, extract_masks=False, n_channels=3):
         
         split = split.lower()
         if split not in ['train', 'val']:
             split = 'val' 
         self.split = split
         self.data_folder = data_folder
+        self.extract_masks = extract_masks
         
         #self.folder_tiles = "/home/a01328525/Datasets Tiles/Zone108_octubre/"
         if split not in ['train', 'val']:
@@ -406,6 +409,7 @@ class Load_data_agave_circles_multispectral(Dataset):
         self.batch_count = 0
         self.augment = augment
         self.prob = prob
+        self.n_channels = n_channels
 
     def __getitem__(self, index):
         # 1. Image
@@ -415,11 +419,15 @@ class Load_data_agave_circles_multispectral(Dataset):
         #with rio.open(image_path) as img :
         #    image = img.read()
         image = imread(image_path)
-        
         #flag_2 = time.time()
         # Extract image as PyTorch tensor
         image = torch.Tensor(image.transpose(2, 0, 1)) # shape: n_channels x W x H
-
+        
+        if self.extract_masks:
+            mask = image[8, ...].unsqueeze(0)
+        else:
+            mask = None
+        image = image[0:self.n_channels, ...]
         # 2. Label
         # -----------------------------------------------------------------------------------
         label_path = self.data_folder + self.split+ '/labels/' + self.file_names[index] + '.txt'
@@ -433,28 +441,40 @@ class Load_data_agave_circles_multispectral(Dataset):
                 p = np.random.random()
                 if p<0.33:
                     ##################### Reflexion ######################
-                    image, boxes = horisontal_flip(image, boxes)
+                    image, boxes, mask = horisontal_flip(image, boxes, mask)
                 if p>=0.33 and p<0.66:
                 ##################### Color ######################
-                    image = torchvision.transforms.GaussianBlur(kernel_size=5)(image)
+                    image = torchvision.transforms.GaussianBlur(kernel_size=7)(image)
+                    if self.extract_masks:
+                        mask = torchvision.transforms.GaussianBlur(kernel_size=7)(mask)
                 if p>=0.66:
                     ##################### Rotation ######################
-                    angle = np.random.randint(-10, 10)
+                    angle = np.random.randint(-15, 15)
                     image = torchvision.transforms.functional.rotate(image, angle)
                     boxes[:,1:3] = rotate_point(boxes[:,1:3], -angle, (0.5, 0.5))
                     boxes = boxes[(boxes[:,1] >= 0) & (boxes[:,1] <= 1) & (boxes[:,2] >= 0) & (boxes[:,2] <= 1)]
+                    if self.extract_masks:
+                        mask = torchvision.transforms.functional.rotate(mask, angle)
 
         targets = torch.zeros((len(boxes), 5))
         targets[:, 1:] = boxes
-
-        return image_path, image, targets
+        #targets[:, 1] = 0 #only one class
+        
+        if self.extract_masks:
+            return image_path, image, targets, mask
+        else:
+            return image_path, image, targets
 
     def __len__(self):
         return len(self.file_names)
 
     def collate_fn(self, batch):
-
-        paths, images, targets = zip(*batch)
+        
+        if self.extract_masks:
+            paths, images, targets, masks = zip(*batch)
+            masks = torch.stack(masks, dim=0)
+        else:
+            paths, images, targets = zip(*batch)
 
         # Remove empty placeholder targets
         targets = [boxes for boxes in targets]
@@ -466,20 +486,24 @@ class Load_data_agave_circles_multispectral(Dataset):
         targets = torch.cat(targets, 0)
 
         images = torch.stack(images, dim=0)
-
+        
         self.batch_count += 1
-
-        return paths, images, targets
+        
+        if self.extract_masks:
+            return paths, images, targets, masks
+        else:
+            return paths, images, targets
     
 class Load_data_acuario(Dataset):
-    def __init__(self, data_folder: str, split = 'Val'):
+    def __init__(self, data_folder: str, split = 'test'):
         
-        split = split.lower()
+        self.split = split.lower()
         self.data_folder = data_folder
         
         #self.folder_tiles = "/home/a01328525/Datasets Tiles/Zone108_octubre/"
-        if split not in ['train', 'val']:
-            split = 'val' 
+        if self.split not in ['train', 'test']:
+            self.split = 'test' 
+           
         print('Load '+split+" data")
         file_names = os.listdir(data_folder+split+'/')
         file_names = [file_name[:-4] for file_name in file_names if file_name[-3:]=='jpg']
@@ -490,7 +514,7 @@ class Load_data_acuario(Dataset):
     def __getitem__(self, index):
         # 1. Image
         # -----------------------------------------------------------------------------------
-        image_path = self.data_folder + 'train/' + self.file_names[index] + '.jpg'
+        image_path = self.data_folder + self.split+'/' + self.file_names[index] + '.jpg'
         #with rio.open(image_path) as img :
         #    image = img.read()[0:N_channels,:,:]
         image = cv2.imread(image_path)
@@ -500,7 +524,7 @@ class Load_data_acuario(Dataset):
 
         # 2. Label
         # -----------------------------------------------------------------------------------
-        label_path = self.data_folder + 'train/' + self.file_names[index] + '.txt'
+        label_path = self.data_folder + self.split+ '/' + self.file_names[index] + '.txt'
         
         boxes = torch.from_numpy(np.loadtxt(label_path).reshape(-1, 5))
         #boxes[:,0] = 0

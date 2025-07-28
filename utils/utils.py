@@ -86,15 +86,18 @@ def bbox_iou(box1, box2, x1y1x2y2=False, align=True, DIoU=False, CIoU=False, eps
         rho2 = (b2_xc-b1_xc)**2 + (b2_yc-b1_yc)**2
         
         if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
-            v = (4 / torch.pi**2) * (((b2_x2 - b2_x1) / (b2_y2 - b2_y1)).atan() - ((b1_x2 - b1_x1) / (b1_y2 - b1_y1)).atan()).pow(2)
-            with torch.no_grad():
-                alpha = v / (v - iou + (1 + eps))
+            v = (4 / torch.pi**2) * (((b2_x2 - b2_x1 + eps) / (b2_y2 - b2_y1 + eps)).atan() - ((b1_x2 - b1_x1 + eps) / (b1_y2 - b1_y1 + eps)).atan()).pow(2)
+            alpha = v / (v - iou + (1 + eps))
+            
+            
             return iou - (rho2 / C2 + v * alpha)  # CIoU
 
         return iou - rho2 / C2  # DIoU
     
     return iou
 
+#box1: preds
+#box2: targets
 def cbbox_iou(box1, box2, align=True, DIoU = False, eps = 1e-8):  #one to one cbbox
     """
         Returns the IoU of each pair of circular bounding boxes one to one if align is true else iou of each box1 to each box2
@@ -149,8 +152,12 @@ def cbbox_iou(box1, box2, align=True, DIoU = False, eps = 1e-8):  #one to one cb
 
         C2 = torch.pow(torch.sub(lineExtrema_x1,lineExtrema_x2),2)+torch.pow(torch.sub(lineExtrema_y1,lineExtrema_y2),2)
         C2 = torch.where(checks_inside, 4*R2, C2)
-
-        return iou - rho2 / C2  # DIoU
+        
+        #if align:
+                #return iou - rho2 / C2, (torch.pi*R2-inter_area)/r, (torch.pi*r2-inter_area)/R # DIoU
+        #        return iou - rho2 / C2, inter_area/(torch.pi*r2), inter_area/(torch.pi*R2) # DIoU
+        return iou - rho2 / C2 #- (torch.pi*R2-inter_area)/r - (torch.pi*r2-inter_area)/R # DIoU
+    
     
     return iou 
 
@@ -194,6 +201,7 @@ def build_targets_circle(pred_boxes, target, anchors, device, ignore_thres=0.5, 
     obj_mask = torch.zeros(nB, nA, nG, nG, dtype=torch.bool, device=device)
     iou_scores = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     tar = torch.zeros(nB, nA, nG, nG, 3, dtype=torch.float, device=device)
+    labels = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     #th = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     #tcls = torch.zeros(nB, nA, nG, nG, nC, dtype=torch.float, device=device)
     pos = torch.ones(nB, nA, nG, nG, dtype=torch.bool, device=device)
@@ -229,12 +237,13 @@ def build_targets_circle(pred_boxes, target, anchors, device, ignore_thres=0.5, 
         #iou_scores[b, best_ious_idx, gj, gi] = cbbox_iou(pred_boxes[b, best_ious_idx, gj, gi][:,0:3], target[:,2:5],
         #                                                align = True, DIoU=False).view(-1,) 
         #iou_scores[b, best_ious_idx, gj, gi] = (1-f)+f*iou_scores[b, best_ious_idx, gj, gi] #for low iou start in 1-f value as score
+        labels[b, best_ious_idx, gj, gi] = target[:, 1] #gx - gx.floor()
         
         tar[b, best_ious_idx, gj, gi, 0] = target[:, 2] #gx - gx.floor()
         tar[b, best_ious_idx, gj, gi, 1] = target[:, 3] #gy# - gy.floor()
         tar[b, best_ious_idx, gj, gi, 2] = target[:, 4] #torch.log(gr / anchors[best_ious_idx] + 1e-16)
         #return tar, iou_scores, obj_mask, noobj_mask
-        return tar[b, best_ious_idx, gj, gi, :], pred_boxes[b, best_ious_idx, gj, gi, :], obj_mask, 0
+        return tar[b, best_ious_idx, gj, gi, :], pred_boxes[b, best_ious_idx, gj, gi, :], obj_mask, labels
     else:
         noobj_mask = torch.ones(nB, nA, nG, nG, dtype=torch.bool, device=device)
         noobj_mask[b, best_ious_idx, gj, gi] = 0 #cell with objects are power off in non object mask
@@ -262,6 +271,7 @@ def build_targets_rec(pred_boxes, target, anchors, device, ignore_thres=0.5, iou
     obj_mask = torch.zeros(nB, nA, nG, nG, dtype=torch.bool, device=device)
     iou_scores = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     tar = torch.zeros(nB, nA, nG, nG, 4, dtype=torch.float, device=device)
+    labels = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     #th = torch.zeros(nB, nA, nG, nG, dtype=torch.float, device=device)
     #tcls = torch.zeros(nB, nA, nG, nG, nC, dtype=torch.float, device=device)
     pos = torch.ones(nB, nA, nG, nG, dtype=torch.bool, device=device)
@@ -298,13 +308,14 @@ def build_targets_rec(pred_boxes, target, anchors, device, ignore_thres=0.5, iou
         #iou_scores[b, best_ious_idx, gj, gi] = bbox_iou(pred_boxes[b, best_ious_idx, gj, gi][:,0:4], target[:,2:6], 
         #                                                x1y1x2y2=False, align = True, DIoU=False).view(-1,) 
         #iou_scores[b, best_ious_idx, gj, gi] = (1-f)+f*iou_scores[b, best_ious_idx, gj, gi] #for low iou start in 1-f value as score
+        labels[b, best_ious_idx, gj, gi] = target[:, 1] #gx - gx.floor()
         
         tar[b, best_ious_idx, gj, gi, 0] = target[:, 2] #gx - gx.floor()
         tar[b, best_ious_idx, gj, gi, 1] = target[:, 3] #gy# - gy.floor()
         tar[b, best_ious_idx, gj, gi, 2] = target[:, 4] #torch.log(gr / anchors[best_ious_idx] + 1e-16)
         tar[b, best_ious_idx, gj, gi, 3] = target[:, 5] #torch.log(gr / anchors[best_ious_idx] + 1e-16)
         #return tar, iou_scores, obj_mask, noobj_mask
-        return tar[b, best_ious_idx, gj, gi, :], pred_boxes[b, best_ious_idx, gj, gi, :], obj_mask, 0
+        return tar[b, best_ious_idx, gj, gi, :], pred_boxes[b, best_ious_idx, gj, gi, :], obj_mask, labels
     else:
         noobj_mask = torch.ones(nB, nA, nG, nG, dtype=torch.bool, device=device)
         noobj_mask[b, best_ious_idx, gj, gi] = 0 #cell with objects are power off in non object mask
@@ -512,8 +523,8 @@ def mAP(boxes_gt, boxes_pred, classes_gt, classes_pred, num_classes, scores, obj
     
     sort_index = scores.argsort(descending=True) #sort of the largest score to the smallest
     boxes_pred = boxes_pred[sort_index]
-    #classes_pred = classes_pred[sort_index]
-    classes_pred = torch.zeros_like(scores)
+    classes_pred = classes_pred[sort_index]
+    #classes_pred = torch.zeros_like(scores)
     
     average_precisions = []
     epsilon = 1e-6
@@ -549,8 +560,9 @@ def mAP(boxes_gt, boxes_pred, classes_gt, classes_pred, num_classes, scores, obj
         average_precisions.append(torch.trapz(precisions, recalls))
         
         corrects += mappings.sum()
-    
-    return np.array((sum(average_precisions)/len(average_precisions)).cpu())*100, np.array(corrects.cpu())
+        
+    average_precisions = torch.tensor(average_precisions)
+    return np.array((sum(average_precisions)/len(average_precisions)).cpu())*100, np.array(corrects.cpu()), average_precisions*100
 
 ################################ VI #########################################
 #bands are between 0 and 1, the returned VI is also between 0 and 1
