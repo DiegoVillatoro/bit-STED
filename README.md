@@ -53,3 +53,4 @@ We named the bit-simplified transformer encoder for detection (bit-STED) based o
 | [bit-STED medium](https://drive.google.com/file/d/1cGVp7fCWQs2DxOpFvx4cWrNw1r4-IHa4/view?usp=drive_link) | 224x224                 | 90.24                 | 22.26                  | 22.26                     | 6.62                            | 96.13               | 
 </details>
 
+Example for load model and test images is provides on jupyter notebook
