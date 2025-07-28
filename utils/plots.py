@@ -226,7 +226,7 @@ def plot_model_test(preds_boxes_test, preds_scores_test, imgs_test, imgnp, obj, 
     plt.imshow(img); plt.axis('off')
     plt.title('Filtered boxes')
 
-def draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, boxes_gt, TP_index, FP_index, FN_index):
+def draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index, FP_index, FN_index):
     img = imgnp[:,:,-3:] #select last 3 channels
     img = img[:,:,[2, 1, 0]].copy()
     img = (255*img/correctionFactor).astype('uint8')
@@ -234,6 +234,11 @@ def draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, bo
     draw = ImageDraw.Draw(img)
     color = (32, 255, 32) #green
     for i in TP_index:
+        if classes_filtered[i]==0:
+                color = (32, 255, 25) #green
+        else:
+            color = (32, 255, 25)
+                
         if obj=='bbox':
             #cv2.rectangle(img, (int(boxes_filtered[i][0]), int(boxes_filtered[i][1])), (int(boxes_filtered[i][2]), int(boxes_filtered[i][3])), (0, 255, 0), 2)
             x1, y1, x2, y2 = boxes_filtered[i][0], boxes_filtered[i][1], boxes_filtered[i][2], boxes_filtered[i][3]
@@ -279,7 +284,7 @@ def draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, bo
             draw.ellipse((xc-r, yc-r, xc+r, yc+r), outline=color, width=2)
     return img
             
-def plot_model_eval(imgnp, correctionFactor, obj, boxes_filtered, scores_filtered, boxes_gt, TP_index, FP_index, FN_index, TP_index2, FP_index2, FN_index2, TP_index3, FP_index3, FN_index3, frac_size=300):
+def plot_model_eval(imgnp, correctionFactor, obj, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index, FP_index, FN_index, TP_index2, FP_index2, FN_index2, TP_index3, FP_index3, FN_index3, frac_size=300):
     
     plt.figure(figsize=(9*2, 9*2))
 
@@ -289,11 +294,11 @@ def plot_model_eval(imgnp, correctionFactor, obj, boxes_filtered, scores_filtere
     #color = tuple(cmap_rgb[int(0) % len(cmap_rgb)])
 
     ###### PLOT FRACTION OF ORTHOPHOTO FOR SEE ALL DETECTED BOXES
-    img0 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, boxes_gt, TP_index=range(len(scores_filtered)), FP_index=[], FN_index=[])
+    img0 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index=np.concatenate((TP_index, FP_index)), FP_index=[], FN_index=[])
     
-    img1 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, boxes_gt, TP_index, FP_index, FN_index)
-    img2 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, boxes_gt, TP_index2, FP_index2, FN_index2)
-    img3 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, boxes_gt, TP_index3, FP_index3, FN_index3)
+    img1 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index, FP_index, FN_index)
+    img2 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index2, FP_index2, FN_index2)
+    img3 = draw_boxes(imgnp, obj, correctionFactor, boxes_filtered, scores_filtered, classes_filtered, boxes_gt, TP_index3, FP_index3, FN_index3)
     
     #crop fraction
     center = np.array(imgnp[...,0].shape)//2
