@@ -63,12 +63,37 @@ class BboxLoss(nn.Module):
             iou = utils.utils.bbox_iou(pred_bboxes, target_bboxes, align=True, DIoU = True, CIoU = True)
         else:#cbbox
             iou = utils.utils.cbbox_iou(pred_bboxes, target_bboxes, align=True, DIoU = True)
+            #iou, empty, missed = utils.utils.cbbox_iou(pred_bboxes, target_bboxes, align=True, DIoU = True)
         
         loss_iou = (1.0 - iou)
-        
         loss_iou = weight_reduce_loss(loss_iou, avg_factor=N_pos)
+        #loss_empty = (1.0 - empty)
+        #loss_empty = weight_reduce_loss(loss_empty, avg_factor=N_pos)
+        #loss_missed = (1.0 - missed)
+        #loss_missed = weight_reduce_loss(loss_missed, avg_factor=N_pos)
         
-        return loss_iou
+        return loss_iou#, loss_empty, loss_missed
+
+class HuberLoss(nn.Module):
+    """Criterion class for computing training losses during training."""
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred_bboxes, target_bboxes, delta=1):
+        #N_pos = torch.clamp(target_scores.sum(), min=1)
+        residual = torch.abs(target_bboxes - pred_bboxes)
+        condition = residual < delta
+        loss = torch.where(
+            condition,
+            0.5 * residual ** 2,  # MSE-like for small residuals
+            delta * residual - 0.5 * delta ** 2  # MAE-like for large residuals
+        )
+        
+        #loss = weight_reduce_loss(loss, avg_factor=N_pos)
+        loss = torch.mean(loss)
+        
+        return loss
     
 class smooth_l1_loss(nn.Module):
     """Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)."""
@@ -89,6 +114,32 @@ class smooth_l1_loss(nn.Module):
         
         N_pos = torch.clamp(label.sum(), min=1)
         #print(N_pos)
+        loss = weight_reduce_loss(loss, avg_factor=N_pos)
+        return loss#.mean(0).sum()
+
+class DFLoss(nn.Module):
+    """Criterion class for computing Distribution Focal Loss (DFL)."""
+
+    def __init__(self, reg_max=16) -> None:
+        """Initialize the DFL module with regularization maximum."""
+        super().__init__()
+        self.reg_max = reg_max
+
+    def __call__(self, pred_dist, target):
+        """Return sum of left and right DFL losses from https://ieeexplore.ieee.org/document/9792391."""
+        print("dfl compiute")
+        print(pred_dist.shape)
+        print(target.shape)
+        
+        target = target.clamp_(0, self.reg_max - 1 - 0.01)
+        tl = target.long()  # target left
+        tr = tl + 1  # target right
+        wl = tr - target  # weight left
+        wr = 1 - wl  # weight right
+        
+        loss = F.cross_entropy(pred_dist, tl.view(-1), reduction="none").view(tl.shape) * wl + F.cross_entropy(pred_dist, tr.view(-1), reduction="none").view(tl.shape) * wr
+        
+        N_pos = torch.clamp(target.sum(), min=1)
         loss = weight_reduce_loss(loss, avg_factor=N_pos)
         return loss#.mean(0).sum()
     
@@ -142,3 +193,56 @@ class VarifocalLoss(nn.Module):
         
         loss = weight_reduce_loss(loss, avg_factor=N_pos)
         return loss
+
+class DiceLoss(nn.Module):
+    def __init__(self, n_classes):
+        super(DiceLoss, self).__init__()
+        self.n_classes = n_classes
+
+    def _one_hot_encoder(self, input_tensor):
+        tensor_list = []
+        for i in range(self.n_classes):
+            temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
+            tensor_list.append(temp_prob.unsqueeze(1))
+        output_tensor = torch.cat(tensor_list, dim=1)
+        return output_tensor.float()
+
+    def _dice_loss(self, score, target):
+        target = target.float()
+        smooth = 1e-5
+        intersect = torch.sum(score * target)
+        y_sum = torch.sum(target * target)
+        z_sum = torch.sum(score * score)
+        loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
+        loss = 1 - loss
+        return loss
+
+    def forward_one_class(self, inputs, target, weight=None, sigmoid=True):
+        if sigmoid:
+            inputs = torch.sigmoid(inputs)
+        #target = self._one_hot_encoder(target)
+        if weight is None:
+            weight = [1] 
+        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(), target.size())
+        class_wise_dice = []
+        loss = 0.0
+        
+        dice = self._dice_loss(inputs, target)
+        class_wise_dice.append(1.0 - dice.item())
+        loss += dice * weight[0]
+        return loss
+            
+    def forward(self, inputs, target, weight=None, softmax=False):
+        if softmax:
+            inputs = torch.softmax(inputs, dim=1)
+        target = self._one_hot_encoder(target)
+        if weight is None:
+            weight = [1] * self.n_classes
+        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(), target.size())
+        class_wise_dice = []
+        loss = 0.0
+        for i in range(0, self.n_classes):
+            dice = self._dice_loss(inputs[:, i], target[:, i])
+            class_wise_dice.append(1.0 - dice.item())
+            loss += dice * weight[i]
+        return loss / self.n_classes

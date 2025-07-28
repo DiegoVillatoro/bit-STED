@@ -26,13 +26,22 @@ def train(model, dataloader, optimizer, clip, device):
     
     l1_lcbbox, l1_lconf, l2_lcbbox, l2_lconf = 0, 0, 0, 0
 
-    for batch_idx, (_, images, targets) in enumerate(dataloader):
-
+    for batch_idx, (outs) in enumerate(dataloader):
+        if len(outs)==4:
+            (_, images, targets, masks) = outs
+            masks = masks.to(device)
+        else:
+            (_, images, targets) = outs
+            masks = None
+            
         images = images.to(device)
-        targets = targets.to(device)
+        targets = targets.to(device)  
         
         start_b = time.time()
-        loss, outputs = model(images, targets)
+        if masks:
+            loss, outputs, y = model(images, targets, masks)
+        else:
+            loss, outputs = model(images, targets)
 
         loss.backward()
         
@@ -58,20 +67,30 @@ def train(model, dataloader, optimizer, clip, device):
 
 def evaluate(model, dataloader, device):
     model.eval()
+            
     epoch_loss = 0
     times = 0
 
     # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
 
-        for batch_idx, (_, images, targets) in enumerate(dataloader):
+        for batch_idx, (outs) in enumerate(dataloader):
             
-
+            if len(outs)==4:
+                (_, images, targets, masks) = outs
+                masks = masks.to(device)
+            else:
+                (_, images, targets) = outs
+                masks = None
+            
             images = images.to(device)
             targets = targets.to(device)
             
             start_b = time.time()
-            loss, outputs = model(images, targets)
+            if masks:
+                loss, outputs, y = model(images, targets, masks)
+            else:
+                loss, outputs = model(images, targets)
             end_b = time.time()
             
             epoch_loss += loss.cpu().item()
@@ -188,17 +207,17 @@ def saveLastTraining(root_save_results, optimizer, model, scheduler,
     #print("Last lr: %0.6f and total training time: %s saved in %s"%(scheduler.get_last_lr()[0], total_time_string, root_save_results))
     
 
-def get_dataloaders(folder, obj, augment, prob, batch_size):
+def get_dataloaders(folder, obj, augment, prob, batch_size, extract_masks, n_channels):
     if obj == 'bbox':
         #train_dataset = utils.datasets.Load_data_agave('/home/a01328525/Datasets_YOLO/Zones_bboxes_dataset_01/', 'train')
-        train_dataset = utils.datasets.Load_data_agave_multispectral(folder, 'train', augment=augment, prob=prob)
+        train_dataset = utils.datasets.Load_data_agave_multispectral(folder, 'train', augment=augment, prob=prob, extract_masks=extract_masks, n_channels=n_channels)
         #test_dataset = utils.datasets.Load_data_agave('/home/a01328525/Datasets_YOLO/Zones_bboxes_dataset_01/', 'test')
-        test_dataset = utils.datasets.Load_data_agave_multispectral(folder, 'val', augment=False, prob=0)
+        test_dataset = utils.datasets.Load_data_agave_multispectral(folder, 'val', augment=False, prob=0, extract_masks=extract_masks, n_channels=n_channels)
     else:#cbbox
         #train_dataset = utils.datasets.Load_data_agave_circles('/home/a01328525/Datasets_YOLO/Zones_cbboxes_dataset_01/', 'train')
-        train_dataset = utils.datasets.Load_data_agave_circles_multispectral(folder, 'train', augment=augment, prob=prob)
+        train_dataset = utils.datasets.Load_data_agave_circles_multispectral(folder, 'train', augment=augment, prob=prob, extract_masks=extract_masks, n_channels=n_channels)
         #test_dataset = utils.datasets.Load_data_agave_circles('/home/a01328525/Datasets_YOLO/Zones_cbboxes_dataset_01/', 'test')
-        test_dataset = utils.datasets.Load_data_agave_circles_multispectral(folder, 'val', augment=False, prob=0)
+        test_dataset = utils.datasets.Load_data_agave_circles_multispectral(folder, 'val', augment=False, prob=0, extract_masks=extract_masks, n_channels=n_channels)
         
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                                                    collate_fn=train_dataset.collate_fn,
@@ -212,7 +231,8 @@ def get_dataloaders(folder, obj, augment, prob, batch_size):
 def trainer(model, folder_data, obj, optimizer, scheduler, 
             epochs, folder_save_results='', device='gpu', 
             augment=True, batch_size=32, use_optimizer_dict=True, 
-            use_scheduler_dict=True, ReduceLROnPlateau=True, probAugment=0.5, saveEach=10):
+            use_scheduler_dict=True, ReduceLROnPlateau=True, 
+            probAugment=0.5, saveEach=10, extract_masks=False, n_channels=3):
     
     ############################ READ PREVIOUS WEIGHTS IF EXIST ###################################
     model, optimizer, scheduler, losses_train, times_train, losses_eval, times_eval, l1_losses_cbbox, l1_losses_conf, l2_losses_cbbox, l2_losses_conf, best_valid_loss, previous_time = get_pretrained_data(folder_save_results, model, optimizer, scheduler, use_optimizer_dict, use_scheduler_dict, device)
@@ -224,7 +244,7 @@ def trainer(model, folder_data, obj, optimizer, scheduler,
     print('The model size: {:.3f}MB'.format(model_size(model)))
     
     ############################ LOAD DATASET ###################################
-    train_dataloader, test_dataloader = get_dataloaders(folder_data, obj, augment, probAugment, batch_size)
+    train_dataloader, test_dataloader = get_dataloaders(folder_data, obj, augment, probAugment, batch_size, extract_masks, n_channels)
     ############################ DETERMINE EPOCHS ###################################
     flag_training=False
     previous_epochs = len(losses_train)

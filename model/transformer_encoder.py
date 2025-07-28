@@ -294,6 +294,30 @@ class PatchEmbedding2(nn.Module):
         #output shape : batch_size, num_patches, size_embedding
         return self.conv(X).flatten(2).transpose(1,2)
 
+class PatchEmbedding3(nn.Module):
+    def __init__(self, img_size, patch_size = 16, n_model = 512, in_channels = 1):
+        super().__init__()
+        self.grid_size = (img_size[0]//patch_size, img_size[1]//patch_size) # grid size, size of new image according to patch size
+        
+        self.num_patches = self.grid_size[0] * self.grid_size[1] # grid size x grid size
+        
+        self.conv1 = nn.Conv2d(in_channels, n_model//4, kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(n_model//4, n_model//2, kernel_size=2, stride=2)
+        self.conv3 = nn.Conv2d(n_model//2, n_model, kernel_size=2, stride=2)
+        
+        #self.feats = []
+    def forward(self, X):
+        #input shape X : batch_size, num of channels image, height, weight
+        #output shape : batch_size, num_patches, size_embedding
+        feat1 = self.conv1(X) #1//2 
+        feat2 = self.conv2(feat1) #1//4
+        feat3 = self.conv3(feat2) #1//8
+        feats = []
+        feats.append(feat1)
+        feats.append(feat2)
+        feats.append(feat3)
+        return feat3.flatten(2).transpose(1,2), feats
+
 class PatchEmbedding(nn.Module):
     def __init__(self, img_size, patch_size = 16, n_model = 512, in_channels = 1):
         super().__init__()
@@ -342,13 +366,22 @@ class Block_encoder(nn.Module):
         #output batch_size, num_patches, size_embedding
 
 class Encoder(nn.Module):
-    def __init__(self, img_size, in_channels, n_model, mult, patch_size, num_heads=8, num_blks=1, blk_dropout=0.1, device='cpu', bitNet=True):
+    def __init__(self, img_size, in_channels, n_model, mult, patch_size, num_heads=8, num_blks=1, blk_dropout=0.1, device='cpu', bitNet=True, features=False):
         super().__init__()
         self.size = img_size
         self.patch_size = patch_size
-        self.patch_embedding = PatchEmbedding(img_size, patch_size, n_model, in_channels=in_channels)
+        self.features = features
+        if patch_size==8 and features:
+            self.patch_embedding1 = PatchEmbedding(img_size, 2, n_model//4, in_channels=in_channels)
+            self.patch_embedding2 = PatchEmbedding((img_size[0]//2, img_size[1]//2), 2, n_model//2, in_channels=n_model//4)
+            self.patch_embedding3 = PatchEmbedding((img_size[0]//4, img_size[1]//4), 2, n_model, in_channels=n_model//2)
+            num_patches = 784
+        else:
+            self.patch_embedding = PatchEmbedding(img_size, patch_size, n_model, in_channels=in_channels)
+            num_patches = self.patch_embedding.num_patches
+        
         # Posicional embedding are learnable
-        self.pos_embedding = nn.Parameter(torch.randn(1, self.patch_embedding.num_patches, n_model))
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches, n_model))
         #self.cls_token = nn.Parameter(torch.randn(1, 1 , n_model))
         #num_steps = self.patch_embedding.num_patches + num_classes #add cls token
         self.dropout = nn.Dropout(blk_dropout)
@@ -360,8 +393,39 @@ class Encoder(nn.Module):
         
     def forward(self, X):
         # X: batch_size, N channels, height, weight
-        X = self.patch_embedding(X)
-        # X: batch_size, num_patches, size_embedding
+        if self.patch_size==8 and self.features:
+            feats = []
+            #X, feats = self.patch_embedding(X)
+            X = self.patch_embedding1(X)
+            
+            B, _, n_model = X.size() 
+            h, w = self.size[0]//2, self.size[1]//2
+            #X = X[:,1:,:]#ignore first patch
+            X = X.permute(0, 2, 1)
+            X = X.contiguous().view(B, n_model, h, w)
+            #print("x shape after emb1", X.shape)
+        
+            feats.append(X)
+            X = self.patch_embedding2(X)
+            
+            B, _, n_model = X.size() 
+            h, w = self.size[0]//4, self.size[1]//4
+            #X = X[:,1:,:]#ignore first patch
+            X = X.permute(0, 2, 1)
+            X = X.contiguous().view(B, n_model, h, w)
+            #print("x shape after emb2", X.shape)
+            feats.append(X)
+            X = self.patch_embedding3(X)
+            #print("x shape after emb", X.shape)
+            #feats.append(X)
+            
+        else:
+            X = self.patch_embedding(X)
+        
+        # token: batch_size, 1, size_embedding
+        #X = torch.cat((self.cls_token.expand(X.shape[0], -1, -1), X), 1)
+        
+        # X: batch_size, num_patches+1, size_embedding
         X = self.dropout(X+self.pos_embedding)
         for blk in self.blks:
             X  = blk(X)
@@ -373,7 +437,11 @@ class Encoder(nn.Module):
         # reshape from (B, n_patch, n_model) to (B, n_model, h, w)
         B, n_patch, n_model = X.size() 
         h, w = self.size[0]//self.patch_size, self.size[1]//self.patch_size
+        #X = X[:,1:,:]#ignore first patch
         X = X.permute(0, 2, 1)
         X = X.contiguous().view(B, n_model, h, w)
-
-        return X
+        
+        if self.patch_size==8 and self.features:
+            return X, feats
+        else:
+            return X
