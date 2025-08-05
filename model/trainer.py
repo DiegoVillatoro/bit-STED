@@ -38,7 +38,7 @@ def train(model, dataloader, optimizer, clip, device):
         targets = targets.to(device)  
         
         start_b = time.time()
-        if masks:
+        if masks != None:
             loss, outputs, y = model(images, targets, masks)
         else:
             loss, outputs = model(images, targets)
@@ -87,7 +87,7 @@ def evaluate(model, dataloader, device):
             targets = targets.to(device)
             
             start_b = time.time()
-            if masks:
+            if masks != None:
                 loss, outputs, y = model(images, targets, masks)
             else:
                 loss, outputs = model(images, targets)
