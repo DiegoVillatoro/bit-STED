@@ -48,9 +48,9 @@ We named the bit-simplified transformer encoder for detection (bit-STED) based o
 
 |                                  | <br>Image size | AP (%) | Inference Time (ms) | Size (mb) | <br>Trainable Params (M)<br> | F1 (%) | 
 | -------------------------------------------------------------------------------------------- | ------------------- | -------------------- | --------------------- | ------------------------------- | ------------------------------------ | ------------------- |
-| [bit-STED nano](https://drive.google.com/file/d/1SIg4AEdD-duo_-p6yZ5wCZmzn0ROtmtV/view?usp=drive_link) | 224x224                 | 91.17                 | 14.62                  | 1.4                      | 0.35                            | 96.43               | 
-| [bit-STED small](https://drive.google.com/file/d/1kyCclkaR1HPUMSHNZq4Yjkg-ZLel469h/view?usp=drive_link) | 224x224                 | 85.81                 | 14.50                  | 4.9                     | 1.21                            | 94.72                | 
-| [bit-STED medium](https://drive.google.com/file/d/1cGVp7fCWQs2DxOpFvx4cWrNw1r4-IHa4/view?usp=drive_link) | 224x224                 | 90.24                 | 22.26                  | 22.26                     | 6.62                            | 96.13               | 
+| [bit-STED nano](https://drive.google.com/file/d/1cGVp7fCWQs2DxOpFvx4cWrNw1r4-IHa4/view?usp=sharing) | 224x224                 | 91.17                 | 14.62                  | 1.4                      | 0.35                            | 96.43               | 
+| [bit-STED small](https://drive.google.com/file/d/1SIg4AEdD-duo_-p6yZ5wCZmzn0ROtmtV/view?usp=sharing) | 224x224                 | 85.81                 | 14.50                  | 4.9                     | 1.21                            | 94.72                | 
+| [bit-STED medium](https://drive.google.com/file/d/1kyCclkaR1HPUMSHNZq4Yjkg-ZLel469h/view?usp=sharing) | 224x224                 | 90.24                 | 22.26                  | 22.26                     | 6.62                            | 96.13               | 
 </details>
 
 Example for load model and test images is provides on jupyter notebook
